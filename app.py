@@ -16,39 +16,42 @@ logger = logging.getLogger(__name__)
 shopify_client = None
 ai_classifier = None
 scheduler = None
+initialized = False
 
 def init_components():
     """Initialize components after app starts"""
-    global shopify_client, ai_classifier, scheduler
+    global shopify_client, ai_classifier, scheduler, initialized
     
-    if not shopify_client:
+    if initialized:
+        return
+    
+    try:
         from shopify_client import ShopifyClient
         shopify_client = ShopifyClient()
-    
-    if not ai_classifier:
+        
         from ai_classifier import AIClassifier
         ai_classifier = AIClassifier()
-    
-    if not scheduler:
+        
         from scheduler import TaskScheduler
         scheduler = TaskScheduler()
         scheduler.start()
-
-@app.before_first_request
-def startup():
-    """Initialize on first request"""
-    init_components()
-    
-    # Try initial collection sync
-    try:
-        if shopify_client:
+        
+        # Try initial collection sync
+        try:
             shopify_client.fetch_all_collections()
+        except Exception as e:
+            logger.error(f"Initial collection sync failed: {e}")
+        
+        initialized = True
+        logger.info("Components initialized successfully")
     except Exception as e:
-        logger.error(f"Initial collection sync failed: {e}")
+        logger.error(f"Failed to initialize components: {e}")
 
 @app.route('/')
 def dashboard():
     """Main dashboard view"""
+    init_components()  # Initialize on first request
+    
     db = Session()
     try:
         # Get statistics
@@ -98,6 +101,12 @@ def scan_products():
     try:
         init_components()
         
+        if not shopify_client:
+            return jsonify({
+                'success': False,
+                'error': 'System not initialized'
+            }), 500
+        
         # Fetch collections first
         shopify_client.fetch_all_collections()
         
@@ -122,6 +131,12 @@ def process_queue():
     try:
         init_components()
         
+        if not ai_classifier:
+            return jsonify({
+                'success': False,
+                'error': 'System not initialized'
+            }), 500
+        
         # Process with rate limiting
         batch_size = int(request.form.get('batch_size', 10))
         processed = ai_classifier.process_queue(batch_size=batch_size)
@@ -142,6 +157,13 @@ def apply_assignments():
     """Apply AI assignments to Shopify"""
     try:
         init_components()
+        
+        if not shopify_client:
+            return jsonify({
+                'success': False,
+                'error': 'System not initialized'
+            }), 500
+        
         db = Session()
         
         # Get processed products that haven't been applied
@@ -153,7 +175,7 @@ def apply_assignments():
         applied_count = 0
         for product in products:
             if product.assigned_collections:
-                collection_ids = [c['id'] for c in product.assigned_collections if c['confidence'] > 0.8]
+                collection_ids = [c['id'] for c in product.assigned_collections if c.get('confidence', 0) > 0.8]
                 if collection_ids:
                     success = shopify_client.update_product_collections(
                         product.product_id,
@@ -183,6 +205,8 @@ def apply_assignments():
 @app.route('/suggestions')
 def suggestions():
     """View all collection suggestions"""
+    init_components()
+    
     db = Session()
     try:
         suggestions = db.query(CollectionSuggestion).order_by(
@@ -232,4 +256,31 @@ def add_collection():
 @app.route('/retry-errors', methods=['POST'])
 def retry_errors():
     """Retry failed products"""
-    db
+    db = Session()
+    try:
+        # Reset error products to pending
+        error_products = db.query(ProductQueue).filter_by(status='error').all()
+        for product in error_products:
+            product.status = 'pending'
+            product.error_message = None
+            product.retry_count = 0
+        db.commit()
+        
+        return jsonify({
+            'success': True,
+            'message': f'Reset {len(error_products)} products for retry'
+        })
+    finally:
+        db.close()
+
+@app.route('/health')
+def health():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy', 
+        'timestamp': datetime.utcnow().isoformat(),
+        'initialized': initialized
+    })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
