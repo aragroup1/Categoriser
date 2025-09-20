@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shopify AI Collection Manager</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #333;
+        }
+        .stat-label {
+            color: #666;
+            margin-top: 5px;
+        }
+        .section {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .button {
+            background: #5c6ac4;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        .button:hover {
+            background: #4a5ab3;
+        }
+        .button.secondary {
+            background: #e0e0e0;
+            color: #333;
+        }
+        .button.secondary:hover {
+            background: #d0d0d0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        th {
+            font-weight: 600;
+            color: #666;
+        }
+        .badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.85em;
+            font-weight: 500;
+        }
+        .badge.success {
+            background: #d4f4dd;
+            color: #1a7338;
+        }
+        .badge.error {
+            background: #fdd;
+            color: #c33;
+        }
+        .badge.pending {
+            background: #fff3cd;
+            color: #856404;
+        }
+        .actions {
+            margin: 20px 0;
+        }
+        .alert {
+            padding: 15px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+        }
+        .alert.success {
+            background: #d4f4dd;
+            color: #1a7338;
+        }
+        .alert.error {
+            background: #fdd;
+            color: #c33;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Shopify AI Collection Manager</h1>
+            <p>Intelligent product categorization powered by AI</p>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">{{ stats.total_products_queued }}</div>
+                <div class="stat-label">Total Products Queued</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{ stats.pending_products }}</div>
+                <div class="stat-label">Pending Processing</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{ stats.processed_products }}</div>
+                <div class="stat-label">Processed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{ stats.error_products }}</div>
+                <div class="stat-label">Errors</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{ stats.ready_suggestions }}</div>
+                <div class="stat-label">Ready Suggestions</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{ stats.total_collections }}</div>
+                <div class="stat-label">Total Collections</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Quick Actions</h2>
+            <div class="actions">
+                <button class="button" onclick="scanProducts()">Scan New Products</button>
+                <button class="button" onclick="processQueue()">Process Queue (10)</button>
+                <button class="button" onclick="applyAssignments()">Apply Assignments</button>
+                <button class="button secondary" onclick="retryErrors()">
