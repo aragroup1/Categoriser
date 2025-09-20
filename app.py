@@ -1,24 +1,50 @@
 from flask import Flask, render_template, jsonify, request, redirect, url_for
 from models import Session, ProductQueue, CollectionSuggestion, CollectionHierarchy
-from shopify_client import ShopifyClient
-from ai_classifier import AIClassifier
-from scheduler import TaskScheduler
+from sqlalchemy import func
 import os
 from datetime import datetime, timedelta
-from sqlalchemy import func
 import logging
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-# Initialize components
-shopify_client = ShopifyClient()
-ai_classifier = AIClassifier()
-scheduler = TaskScheduler()
-
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Initialize components lazily to avoid startup errors
+shopify_client = None
+ai_classifier = None
+scheduler = None
+
+def init_components():
+    """Initialize components after app starts"""
+    global shopify_client, ai_classifier, scheduler
+    
+    if not shopify_client:
+        from shopify_client import ShopifyClient
+        shopify_client = ShopifyClient()
+    
+    if not ai_classifier:
+        from ai_classifier import AIClassifier
+        ai_classifier = AIClassifier()
+    
+    if not scheduler:
+        from scheduler import TaskScheduler
+        scheduler = TaskScheduler()
+        scheduler.start()
+
+@app.before_first_request
+def startup():
+    """Initialize on first request"""
+    init_components()
+    
+    # Try initial collection sync
+    try:
+        if shopify_client:
+            shopify_client.fetch_all_collections()
+    except Exception as e:
+        logger.error(f"Initial collection sync failed: {e}")
 
 @app.route('/')
 def dashboard():
@@ -70,6 +96,8 @@ def dashboard():
 def scan_products():
     """Manually trigger product scan"""
     try:
+        init_components()
+        
         # Fetch collections first
         shopify_client.fetch_all_collections()
         
@@ -92,6 +120,8 @@ def scan_products():
 def process_queue():
     """Manually trigger queue processing"""
     try:
+        init_components()
+        
         # Process with rate limiting
         batch_size = int(request.form.get('batch_size', 10))
         processed = ai_classifier.process_queue(batch_size=batch_size)
@@ -111,6 +141,7 @@ def process_queue():
 def apply_assignments():
     """Apply AI assignments to Shopify"""
     try:
+        init_components()
         db = Session()
         
         # Get processed products that haven't been applied
@@ -170,7 +201,6 @@ def approve_suggestion(suggestion_id):
         if suggestion:
             suggestion.status = 'approved'
             db.commit()
-            # Here you would create the collection in Shopify
             return jsonify({'success': True})
         return jsonify({'success': False, 'error': 'Suggestion not found'}), 404
     finally:
@@ -202,36 +232,4 @@ def add_collection():
 @app.route('/retry-errors', methods=['POST'])
 def retry_errors():
     """Retry failed products"""
-    db = Session()
-    try:
-        # Reset error products to pending
-        error_products = db.query(ProductQueue).filter_by(status='error').all()
-        for product in error_products:
-            product.status = 'pending'
-            product.error_message = None
-        db.commit()
-        
-        return jsonify({
-            'success': True,
-            'message': f'Reset {len(error_products)} products for retry'
-        })
-    finally:
-        db.close()
-
-@app.route('/health')
-def health():
-    """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'timestamp': datetime.utcnow().isoformat()})
-
-if __name__ == '__main__':
-    # Start scheduler
-    scheduler.start()
-    
-    # Run initial collection sync
-    try:
-        shopify_client.fetch_all_collections()
-    except Exception as e:
-        logger.error(f"Initial collection sync failed: {e}")
-    
-    # Run app
-    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+    db
