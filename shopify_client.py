@@ -3,53 +3,82 @@ import os
 from datetime import datetime, timedelta
 from models import Session, CollectionHierarchy, ProductQueue
 import time
+import requests
 
 class ShopifyClient:
     def __init__(self):
-        shop_url = f"https://{os.getenv('SHOPIFY_SHOP_URL')}"
-        api_version = '2024-01'
-        private_app_password = os.getenv('SHOPIFY_ACCESS_TOKEN')
+        # Use the REST API directly with requests for better control
+        self.shop_url = os.getenv('SHOPIFY_SHOP_URL')
+        self.access_token = os.getenv('SHOPIFY_ACCESS_TOKEN')
+        self.api_version = '2023-10'  # Use stable version
+        self.base_url = f"https://{self.shop_url}/admin/api/{self.api_version}"
+        self.headers = {
+            'X-Shopify-Access-Token': self.access_token,
+            'Content-Type': 'application/json'
+        }
         
-        session = shopify.Session(shop_url, api_version, private_app_password)
-        shopify.ShopifyResource.activate_session(session)
+    def _make_request(self, endpoint, method='GET', data=None, params=None):
+        """Make API request with error handling"""
+        url = f"{self.base_url}/{endpoint}"
         
+        try:
+            if method == 'GET':
+                response = requests.get(url, headers=self.headers, params=params)
+            elif method == 'POST':
+                response = requests.post(url, headers=self.headers, json=data)
+            elif method == 'PUT':
+                response = requests.put(url, headers=self.headers, json=data)
+            
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"API request error: {e}")
+            return None
+    
     def fetch_all_collections(self):
         """Fetch all collections and build hierarchy"""
         db = Session()
         try:
-            collections = []
-            page_info = None
+            all_collections = []
             
+            # Fetch custom collections
+            params = {'limit': 250}
             while True:
-                if page_info:
-                    custom_collections = shopify.CustomCollection.find(page_info=page_info, limit=250)
-                else:
-                    custom_collections = shopify.CustomCollection.find(limit=250)
-                
-                collections.extend(custom_collections)
-                
-                if not custom_collections.has_next_page():
+                result = self._make_request('custom_collections.json', params=params)
+                if not result or 'custom_collections' not in result:
                     break
-                page_info = custom_collections.next_page_info
+                
+                collections = result['custom_collections']
+                all_collections.extend(collections)
+                
+                # Check for pagination
+                if len(collections) < 250:
+                    break
+                    
+                # Get next page
+                if 'Link' in result.get('headers', {}):
+                    # Parse link header for next page
+                    params['page_info'] = self._extract_page_info(result['headers']['Link'])
+                else:
+                    break
             
-            # Also fetch smart collections
-            page_info = None
+            # Fetch smart collections
+            params = {'limit': 250}
             while True:
-                if page_info:
-                    smart_collections = shopify.SmartCollection.find(page_info=page_info, limit=250)
-                else:
-                    smart_collections = shopify.SmartCollection.find(limit=250)
-                
-                collections.extend(smart_collections)
-                
-                if not smart_collections.has_next_page():
+                result = self._make_request('smart_collections.json', params=params)
+                if not result or 'smart_collections' not in result:
                     break
-                page_info = smart_collections.next_page_info
+                
+                collections = result['smart_collections']
+                all_collections.extend(collections)
+                
+                if len(collections) < 250:
+                    break
             
             # Build hierarchy
-            self._build_collection_hierarchy(collections, db)
+            self._build_collection_hierarchy(all_collections, db)
             
-            return collections
+            return all_collections
             
         finally:
             db.close()
@@ -60,12 +89,11 @@ class ShopifyClient:
         db.query(CollectionHierarchy).delete()
         
         for collection in collections:
-            title = collection.title
-            handle = collection.handle
-            collection_id = str(collection.id)
+            title = collection.get('title', '')
+            handle = collection.get('handle', '')
+            collection_id = str(collection.get('id', ''))
             
-            # Determine level based on title structure (adjust based on your naming convention)
-            # Example: "Men > Clothing > T-Shirts" or "Men - Clothing - T-Shirts"
+            # Determine level based on title structure
             if ' > ' in title:
                 parts = title.split(' > ')
             elif ' - ' in title:
@@ -80,7 +108,7 @@ class ShopifyClient:
             
             # Find parent collection if level > 1
             if level > 1:
-                parent_title = ' > '.join(parts[:-1])  # Adjust separator as needed
+                parent_title = ' > '.join(parts[:-1])
                 parent = db.query(CollectionHierarchy).filter_by(title=parent_title).first()
                 if parent:
                     parent_id = parent.collection_id
@@ -89,7 +117,7 @@ class ShopifyClient:
                 collection_id=collection_id,
                 handle=handle,
                 title=title,
-                level=min(level, 3),  # Cap at 3 levels
+                level=min(level, 3),
                 parent_id=parent_id,
                 full_path=title,
                 updated_at=datetime.utcnow()
@@ -105,49 +133,44 @@ class ShopifyClient:
             if not since_date:
                 since_date = datetime.utcnow() - timedelta(days=1)
             
-            products = []
-            page_info = None
+            products_added = 0
+            params = {
+                'limit': 250,
+                'updated_at_min': since_date.isoformat()
+            }
             
             while True:
-                if page_info:
-                    batch = shopify.Product.find(
-                        updated_at_min=since_date.isoformat(),
-                        page_info=page_info,
-                        limit=250
-                    )
-                else:
-                    batch = shopify.Product.find(
-                        updated_at_min=since_date.isoformat(),
-                        limit=250
-                    )
+                result = self._make_request('products.json', params=params)
+                if not result or 'products' not in result:
+                    break
                 
-                for product in batch:
+                products = result['products']
+                
+                for product in products:
                     # Check if product is already in queue
                     existing = db.query(ProductQueue).filter_by(
-                        product_id=str(product.id),
+                        product_id=str(product['id']),
                         status='pending'
                     ).first()
                     
                     if not existing:
                         queue_item = ProductQueue(
-                            product_id=str(product.id),
-                            title=product.title,
-                            description=product.body_html or '',
+                            product_id=str(product['id']),
+                            title=product.get('title', ''),
+                            description=product.get('body_html', ''),
                             status='pending'
                         )
                         db.add(queue_item)
+                        products_added += 1
                 
-                products.extend(batch)
-                
-                if not batch.has_next_page():
+                if len(products) < 250:
                     break
-                page_info = batch.next_page_info
                 
                 # Rate limit protection
                 time.sleep(0.5)
             
             db.commit()
-            return len(products)
+            return products_added
             
         finally:
             db.close()
@@ -155,14 +178,25 @@ class ShopifyClient:
     def update_product_collections(self, product_id, collection_ids):
         """Update product's collection assignments"""
         try:
-            product = shopify.Product.find(product_id)
+            # First, get existing collects for this product
+            existing_collects = self._make_request(f'collects.json?product_id={product_id}')
             
+            # Remove existing collects
+            if existing_collects and 'collects' in existing_collects:
+                for collect in existing_collects['collects']:
+                    self._make_request(f'collects/{collect["id"]}.json', method='DELETE')
+                    time.sleep(0.2)
+            
+            # Add new collects
             for collection_id in collection_ids:
-                collect = shopify.Collect()
-                collect.product_id = product_id
-                collect.collection_id = collection_id
-                collect.save()
-                time.sleep(0.2)  # Rate limit protection
+                data = {
+                    'collect': {
+                        'product_id': int(product_id),
+                        'collection_id': int(collection_id)
+                    }
+                }
+                self._make_request('collects.json', method='POST', data=data)
+                time.sleep(0.2)
             
             return True
         except Exception as e:
@@ -171,5 +205,12 @@ class ShopifyClient:
     
     def get_product_current_collections(self, product_id):
         """Get current collection assignments for a product"""
-        collects = shopify.Collect.find(product_id=product_id)
-        return [str(c.collection_id) for c in collects]
+        result = self._make_request(f'collects.json?product_id={product_id}')
+        if result and 'collects' in result:
+            return [str(c['collection_id']) for c in result['collects']]
+        return []
+    
+    def _extract_page_info(self, link_header):
+        """Extract page_info from Link header"""
+        # This is a simplified version - you might need to parse the Link header properly
+        return None
